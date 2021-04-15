@@ -1,0 +1,13 @@
+[package]
+name = "dazzle"
+version = "0.1.0"
+authors = ["Chetan Bhasin <chetan.bhasin@jimdo.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "0.2", features = ["full"] }
+bollard = "0.9"
+tokio-stream = "0.1.5"
+futures-util = "0.3.14"
