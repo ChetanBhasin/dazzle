@@ -1,21 +1,17 @@
-use bollard::container::{Config, RemoveContainerOptions, LogsOptions};
+use bollard::container::{Config, LogsOptions, RemoveContainerOptions};
 use bollard::Docker;
 
-use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
+use bollard::models::HostConfig;
 use futures_util::stream::StreamExt;
 use futures_util::TryStreamExt;
-use bollard::exec::StartExecResults::Attached;
-use tokio::time::Duration;
-use bollard::models::HostConfig;
+use std::path::Path;
 
 const IMAGE: &'static str = "l.gcr.io/google/bazel:latest";
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let docker = Docker::connect_with_unix_defaults().unwrap();
+type ErrBox = Box<dyn std::error::Error + 'static>;
 
+async fn build_docker_image(docker: &Docker) -> Result<(), Box<dyn std::error::Error + 'static>> {
     docker
         .create_image(
             Some(CreateImageOptions {
@@ -27,48 +23,95 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         )
         .try_collect::<Vec<_>>()
         .await?;
+    Ok(())
+}
 
-    let bazel_config = Config {
-        image: Some(IMAGE),
+fn build_bazel_config(cmd_args: Vec<String>, current_dir: String) -> Config<String> {
+    let mut args: Vec<String> = vec![];
+    args.push("--output_user_root=/tmp/dazzle".into());
+    cmd_args.iter().for_each(|x| args.push(x.to_owned()));
+    Config {
+        image: Some(IMAGE.into()),
         tty: Some(true),
         attach_stderr: Some(true),
         attach_stdout: Some(true),
         attach_stdin: Some(true),
-        host_config: Some(HostConfig{
+        working_dir: Some("/src/workspace".into()),
+        host_config: Some(HostConfig {
             mounts: None,
+            binds: Some(vec![
+                format!("{}:/src/workspace", current_dir).into(),
+                "/tmp/dazzle:/tmp/dazzle".into(),
+            ]),
             ..Default::default()
         }),
-        cmd: Some(args.iter().map(|s| s as &str).collect()),
+        cmd: Some(args),
         ..Default::default()
-    };
+    }
+}
 
-    let id = docker
-        .create_container::<&str, &str>(None, bazel_config)
-        .await?
-        .id;
+async fn run_container(docker: &Docker, config: Config<String>) -> Result<String, ErrBox> {
+    let container = docker
+        .create_container::<&str, String>(None, config)
+        .await?;
+    let id = container.id;
     docker.start_container::<String>(&id, None).await?;
-    let mut logstream = docker.logs::<String>(&id, Some(LogsOptions {
-        follow: true,
-        stdout: true,
-        stderr: true,
-        ..Default::default()
-    }));
-    while let Some(output) = logstream.next().await {
-         match output {
-             Ok(log) => println!("{}", log),
-             Err(err) => eprintln!("{}", err)
-         }
-    };
+    Ok(id)
+}
 
+async fn stop_container(docker: &Docker, container_id: String) -> Result<(), ErrBox> {
     docker
         .remove_container(
-            &id,
+            &container_id,
             Some(RemoveContainerOptions {
                 force: true,
                 ..Default::default()
             }),
         )
         .await?;
+    Ok(())
+}
+
+async fn map_logs(docker: &Docker, container_id: &String) {
+    let mut logstream = docker.logs::<String>(
+        container_id,
+        Some(LogsOptions {
+            follow: true,
+            stdout: true,
+            stderr: true,
+            ..Default::default()
+        }),
+    );
+
+    while let Some(output) = logstream.next().await {
+        match output {
+            Ok(log) => println!("{}", log),
+            Err(err) => eprintln!("{}", err),
+        }
+    }
+}
+
+fn create_default_dirs() -> Result<(), ErrBox> {
+    let dazzle_dir = Path::new("/tmp/dazzle");
+    std::fs::create_dir_all(dazzle_dir)?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), ErrBox> {
+    create_default_dirs()?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let current_dir: String = std::env::current_dir()?
+        .into_os_string()
+        .into_string()
+        .expect("Could not convert OS String to string");
+    let docker = Docker::connect_with_unix_defaults().unwrap();
+    build_docker_image(&docker).await?;
+    let bazel_config = build_bazel_config(args, current_dir);
+    let container_id = run_container(&docker, bazel_config).await?;
+
+    map_logs(&docker, &container_id).await;
+    stop_container(&docker, container_id).await?;
 
     Ok(())
 }

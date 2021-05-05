@@ -11,3 +11,4 @@ tokio = { version = "0.2", features = ["full"] }
 bollard = "0.9"
 tokio-stream = "0.1.5"
 futures-util = "0.3.14"
+dirs = "3.0.2"
