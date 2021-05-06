@@ -5,7 +5,11 @@ use bollard::image::CreateImageOptions;
 use bollard::models::HostConfig;
 use futures_util::stream::StreamExt;
 use futures_util::TryStreamExt;
+use signal_hook::consts::TERM_SIGNALS;
+use signal_hook::iterator::exfiltrator::SignalOnly;
+use signal_hook::iterator::SignalsInfo;
 use std::path::Path;
+use std::sync::Arc;
 
 const IMAGE: &'static str = "l.gcr.io/google/bazel:latest";
 
@@ -36,6 +40,8 @@ fn build_bazel_config(cmd_args: Vec<String>, current_dir: String) -> Config<Stri
         attach_stderr: Some(true),
         attach_stdout: Some(true),
         attach_stdin: Some(true),
+        open_stdin: Some(true),
+        stdin_once: Some(true),
         working_dir: Some("/src/workspace".into()),
         host_config: Some(HostConfig {
             mounts: None,
@@ -59,7 +65,7 @@ async fn run_container(docker: &Docker, config: Config<String>) -> Result<String
     Ok(id)
 }
 
-async fn stop_container(docker: &Docker, container_id: String) -> Result<(), ErrBox> {
+async fn stop_container(docker: &Docker, container_id: &String) -> Result<(), ErrBox> {
     docker
         .remove_container(
             &container_id,
@@ -72,7 +78,7 @@ async fn stop_container(docker: &Docker, container_id: String) -> Result<(), Err
     Ok(())
 }
 
-async fn map_logs(docker: &Docker, container_id: &String) {
+async fn map_logs(docker: Arc<Docker>, container_id: &String) {
     let mut logstream = docker.logs::<String>(
         container_id,
         Some(LogsOptions {
@@ -105,13 +111,31 @@ async fn main() -> Result<(), ErrBox> {
         .into_os_string()
         .into_string()
         .expect("Could not convert OS String to string");
-    let docker = Docker::connect_with_unix_defaults().unwrap();
+    let docker = Arc::new(Docker::connect_with_unix_defaults().unwrap());
     build_docker_image(&docker).await?;
     let bazel_config = build_bazel_config(args, current_dir);
     let container_id = run_container(&docker, bazel_config).await?;
 
-    map_logs(&docker, &container_id).await;
-    stop_container(&docker, container_id).await?;
+    let job_end = {
+        let docker = docker.clone();
+        let container_id = container_id.clone();
+        tokio::spawn(async move { map_logs(docker, &container_id).await; })
+    };
+
+    let term_sig = tokio::spawn(async move {
+        let mut signals =
+            SignalsInfo::<SignalOnly>::new(TERM_SIGNALS).expect("Failed to fetch signals");
+        for _ in &mut signals {
+            break;
+        };
+    });
+
+    tokio::select! {
+        _val = job_end => {},
+        _val = term_sig => {}
+    }
+
+    stop_container(&docker, &container_id).await?;
 
     Ok(())
 }

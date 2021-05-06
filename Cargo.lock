@@ -168,6 +168,7 @@ dependencies = [
  "bollard",
  "dirs",
  "futures-util",
+ "signal-hook",
  "tokio 0.2.25",
  "tokio-stream",
 ]
@@ -846,6 +847,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "signal-hook"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef33d6d0cd06e0840fba9985aab098c147e67e05cee14d412d3345ed14ff30ac"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
 ]
 
 [[package]]
